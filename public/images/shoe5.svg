@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
+  <rect width="400" height="300" fill="#e9d5ff"/>
+  <g transform="translate(80,140)">
+    <path d="M0 40 Q10 -10 90 -20 Q160 -30 220 0 Q235 10 235 30 L235 45 Q235 55 225 55 L10 55 Q0 55 0 45 Z" fill="#7e22ce" opacity="0.85"/>
+    <ellipse cx="200" cy="15" rx="18" ry="22" fill="#7e22ce"/>
+  </g>
+  <text x="200" y="240" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#1f2937" text-anchor="middle">Studio Slip</text>
+  <text x="200" y="264" font-family="Arial, sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">Placeholder thumbnail — replace in public/images</text>
+</svg>
