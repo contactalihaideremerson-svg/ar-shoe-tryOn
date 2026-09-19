@@ -15,10 +15,12 @@ import { ErrorState } from "../components/ErrorState/ErrorState";
 import { LoadingScreen } from "../components/LoadingScreen/LoadingScreen";
 import { useCamera } from "../hooks/useCamera";
 import { useARTracking } from "../hooks/useARTracking";
+import { useDragScaleGesture } from "../hooks/useDragScaleGesture";
 import { shoes, getShoeById } from "../data/shoes";
 import { preloadShoeModel } from "../utils/modelLoader";
 import { captureVideoFrame, readFileAsImage, validateUploadedFile } from "../utils/imageProcessing";
 import { canRunLiveAR, detectWebGL } from "../utils/deviceDetection";
+import { computeViewportPlane } from "../utils/shoeAlignment";
 import { trackEvent } from "../utils/analytics";
 import type { ShoeProduct, ShoeCalibration } from "../types/shoe";
 
@@ -50,6 +52,34 @@ export function TryOn() {
   };
 
   const tracking = useARTracking(camera.videoRef.current, screenState === "live" && camera.isReady);
+  const [videoAspect, setVideoAspect] = useState(16 / 9);
+
+  // One-finger drag to nudge position, two-finger pinch to resize — a direct,
+  // physical way for the user to correct placement themselves, since
+  // automatic tracking has no real depth sensor and won't always get
+  // scale/position exactly right. Writes into the same per-shoe calibration
+  // override the dev-only CalibrationPanel uses, so both paths compose.
+  const hasManualAdjustment = selectedShoe.id in calibrationOverrides;
+  const liveViewport = computeViewportPlane(videoAspect, camera.facingMode === "user");
+  const wrapperRect = videoWrapperRef.current?.getBoundingClientRect();
+  const dragScale = useDragScaleGesture({
+    value: { offsetX: effectiveShoe.offsetX, offsetY: effectiveShoe.offsetY, scale: effectiveShoe.scale },
+    onChange: (next) => {
+      setCalibrationOverrides((prev) => ({
+        ...prev,
+        [selectedShoe.id]: { ...effectiveShoe, ...next },
+      }));
+    },
+    worldUnitsPerPixelX: wrapperRect && wrapperRect.width > 0 ? liveViewport.width / wrapperRect.width : 0,
+    worldUnitsPerPixelY: wrapperRect && wrapperRect.height > 0 ? liveViewport.height / wrapperRect.height : 0,
+  });
+  const resetManualAdjustment = useCallback(() => {
+    setCalibrationOverrides((prev) => {
+      const next = { ...prev };
+      delete next[selectedShoe.id];
+      return next;
+    });
+  }, [selectedShoe.id]);
 
   // Capability check on mount.
   useEffect(() => {
@@ -70,7 +100,6 @@ export function TryOn() {
     if (next) preloadShoeModel(next.model, shoes.indexOf(next));
   }, [shoeIndex]);
 
-  const [videoAspect, setVideoAspect] = useState(16 / 9);
   useEffect(() => {
     const video = camera.videoRef.current;
     if (!video) return;
@@ -290,7 +319,11 @@ export function TryOn() {
         }
       />
 
-      <div ref={videoWrapperRef} className="relative flex-1 overflow-hidden">
+      <div
+        ref={videoWrapperRef}
+        className="relative flex-1 touch-none select-none overflow-hidden"
+        {...dragScale.handlers}
+      >
         <CameraView ref={camera.setVideoEl} mirrored={camera.facingMode === "user"} />
 
         <ARViewer
@@ -305,6 +338,24 @@ export function TryOn() {
         <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2">
           <TrackingStatusPill status={tracking.status} />
         </div>
+
+        {tracking.status !== "error" && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
+            {hasManualAdjustment ? (
+              <button
+                type="button"
+                onClick={resetManualAdjustment}
+                className="pointer-events-auto rounded-full bg-black/55 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-sm transition hover:bg-black/70"
+              >
+                Reset Position
+              </button>
+            ) : (
+              <span className="rounded-full bg-black/40 px-3 py-1.5 text-xs font-medium text-white/80 backdrop-blur-sm">
+                Drag to move • Pinch to resize
+              </span>
+            )}
+          </div>
+        )}
 
         {tracking.status === "error" && (
           <div className="absolute inset-0 overflow-y-auto bg-black/90">
