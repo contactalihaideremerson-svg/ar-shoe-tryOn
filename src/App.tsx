@@ -5,6 +5,7 @@ import { LoadingScreen } from "./components/LoadingScreen/LoadingScreen";
 
 // Three.js/MediaPipe are heavy — keep them out of the landing page's bundle.
 const TryOn = lazy(() => import("./pages/TryOn").then((m) => ({ default: m.TryOn })));
+const ProductCard = lazy(() => import("./pages/ProductCard").then((m) => ({ default: m.ProductCard })));
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
       >
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/product/:shoeId" element={<ProductCard />} />
           <Route path="/try-on" element={<TryOn />} />
           <Route path="/try-on/:shoeId" element={<TryOn />} />
         </Routes>

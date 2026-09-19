@@ -24,6 +24,9 @@ export interface ShoeProduct extends ShoeCalibration {
   sku: string;
   sizes: number[];
   colorway?: string;
+  /** Placeholder review stats — ready for a real reviews backend later. */
+  rating?: number;
+  reviewCount?: number;
 }
 
 export type FootSide = "left" | "right";

@@ -73,7 +73,7 @@ export function Home() {
             <button
               key={shoe.id}
               type="button"
-              onClick={() => navigate(`/try-on/${shoe.id}`)}
+              onClick={() => navigate(`/product/${shoe.id}`)}
               className="group flex flex-col overflow-hidden rounded-2xl border border-neutral-200 bg-white text-left transition hover:border-neutral-400 hover:shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-900"
             >
               <div className="aspect-square w-full overflow-hidden bg-neutral-100">

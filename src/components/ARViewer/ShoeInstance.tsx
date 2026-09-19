@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
@@ -12,23 +12,34 @@ interface ShoeInstanceProps {
   side: FootSide;
   poseRef: RefObject<FootPose | null>;
   modelUrl: string;
-  placeholderSeed: number;
   calibration: ShoeCalibration;
   viewport: ViewportPlane;
   /** Mirrors the mesh on X for the opposite foot when the source .glb only models one shoe. */
   mirrorMesh: boolean;
+  /**
+   * Diagnostic-only: when true, ignore tracking entirely and place the model
+   * fixed at the viewport center at a fixed readable size. Lets rendering be
+   * verified independently of whether foot tracking is working at all — see
+   * the `?debug=true` overlay's "Model Test" toggle.
+   */
+  modelTestMode?: boolean;
+  /** Diagnostic-only: force the model invisible regardless of tracking/test mode ("Hide Model"). */
+  forceHidden?: boolean;
+  onLoadedChange?: (loaded: boolean) => void;
 }
 
 export function ShoeInstance({
   side,
   poseRef,
   modelUrl,
-  placeholderSeed,
   calibration,
   viewport,
   mirrorMesh,
+  modelTestMode = false,
+  forceHidden = false,
+  onLoadedChange,
 }: ShoeInstanceProps) {
-  const { scene } = useShoeModel(modelUrl, placeholderSeed);
+  const { scene } = useShoeModel(modelUrl);
   const groupRef = useRef<THREE.Group>(null);
   const quatSmoother = useRef(new SmoothedQuaternion());
   const scaleSmoother = useRef(new SmoothedScalar());
@@ -37,8 +48,25 @@ export function ShoeInstance({
   useFrame((_, delta) => {
     const group = groupRef.current;
     if (!group) return;
-    const pose = poseRef.current;
 
+    if (forceHidden) {
+      group.visible = false;
+      return;
+    }
+
+    if (modelTestMode) {
+      // Fixed, tracking-independent placement: center of frame, identity
+      // rotation, a size that reads clearly regardless of the current
+      // shoe's calibration.scale (so a wrong calibration value can't also
+      // hide the model test result).
+      group.visible = true;
+      group.position.set(mirrorMesh ? viewport.width * 0.15 : -viewport.width * 0.15, 0, 0);
+      group.quaternion.identity();
+      group.scale.setScalar(Math.min(viewport.width, viewport.height) * 0.35);
+      return;
+    }
+
+    const pose = poseRef.current;
     if (!pose) {
       if (wasVisible.current) {
         group.visible = false;
@@ -62,6 +90,10 @@ export function ShoeInstance({
     group.scale.setScalar(smoothedScale);
     void delta;
   });
+
+  useEffect(() => {
+    onLoadedChange?.(!!scene);
+  }, [scene, onLoadedChange]);
 
   if (!scene) return null;
 

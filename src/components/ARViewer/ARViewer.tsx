@@ -7,7 +7,6 @@ import type { ShoeProduct } from "../../types/shoe";
 
 interface ARViewerProps {
   shoe: ShoeProduct;
-  shoeIndex: number;
   leftPoseRef: RefObject<FootPose | null>;
   rightPoseRef: RefObject<FootPose | null>;
   aspect: number;
@@ -15,6 +14,10 @@ interface ARViewerProps {
   /** Needed so a still frame can be read back for photo-mode compositing/export. */
   preserveDrawingBuffer?: boolean;
   onCanvasReady?: (canvas: HTMLCanvasElement) => void;
+  /** Diagnostic-only: see ShoeInstance/ARScene. */
+  modelTestMode?: boolean;
+  forceHidden?: boolean;
+  onLoadedChange?: (loaded: boolean) => void;
 }
 
 /**
@@ -25,13 +28,15 @@ interface ARViewerProps {
  */
 export function ARViewer({
   shoe,
-  shoeIndex,
   leftPoseRef,
   rightPoseRef,
   aspect,
   mirrored,
   preserveDrawingBuffer = false,
   onCanvasReady,
+  modelTestMode = false,
+  forceHidden = false,
+  onLoadedChange,
 }: ARViewerProps) {
   const viewport = computeViewportPlane(aspect, mirrored);
 
@@ -48,7 +53,9 @@ export function ARViewer({
         leftPoseRef={leftPoseRef}
         rightPoseRef={rightPoseRef}
         viewport={viewport}
-        placeholderSeed={shoeIndex}
+        modelTestMode={modelTestMode}
+        forceHidden={forceHidden}
+        onLoadedChange={onLoadedChange}
       />
     </Canvas>
   );

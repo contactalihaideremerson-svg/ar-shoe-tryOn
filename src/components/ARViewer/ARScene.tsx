@@ -10,10 +10,21 @@ interface ARSceneProps {
   leftPoseRef: RefObject<FootPose | null>;
   rightPoseRef: RefObject<FootPose | null>;
   viewport: ViewportPlane;
-  placeholderSeed: number;
+  /** Diagnostic-only: see ShoeInstance. */
+  modelTestMode?: boolean;
+  forceHidden?: boolean;
+  onLoadedChange?: (loaded: boolean) => void;
 }
 
-export function ARScene({ shoe, leftPoseRef, rightPoseRef, viewport, placeholderSeed }: ARSceneProps) {
+export function ARScene({
+  shoe,
+  leftPoseRef,
+  rightPoseRef,
+  viewport,
+  modelTestMode = false,
+  forceHidden = false,
+  onLoadedChange,
+}: ARSceneProps) {
   return (
     <>
       <OrthographicCamera
@@ -27,7 +38,10 @@ export function ARScene({ shoe, leftPoseRef, rightPoseRef, viewport, placeholder
         far={100}
       />
       {/* Simplified product-viz lighting rig (key + fill + ambient) rather than a full HDRI
-          environment, to keep the live AR loop lightweight on mobile GPUs. */}
+          environment, to keep the live AR loop lightweight on mobile GPUs. Deliberately not
+          dependent on any single light "getting it right" — ambient alone is enough to make
+          a correctly-visible mesh visible, so a model that still doesn't show with this rig
+          up is a geometry/material/transform problem, not a lighting one. */}
       <ambientLight intensity={0.65} />
       <directionalLight position={[2, 4, 3]} intensity={0.9} />
       <directionalLight position={[-3, 1, -2]} intensity={0.35} />
@@ -36,19 +50,22 @@ export function ARScene({ shoe, leftPoseRef, rightPoseRef, viewport, placeholder
         side="left"
         poseRef={leftPoseRef}
         modelUrl={shoe.model}
-        placeholderSeed={placeholderSeed}
         calibration={shoe}
         viewport={viewport}
         mirrorMesh={false}
+        modelTestMode={modelTestMode}
+        forceHidden={forceHidden}
+        onLoadedChange={onLoadedChange}
       />
       <ShoeInstance
         side="right"
         poseRef={rightPoseRef}
         modelUrl={shoe.model}
-        placeholderSeed={placeholderSeed}
         calibration={shoe}
         viewport={viewport}
         mirrorMesh={true}
+        modelTestMode={modelTestMode}
+        forceHidden={forceHidden}
       />
     </>
   );

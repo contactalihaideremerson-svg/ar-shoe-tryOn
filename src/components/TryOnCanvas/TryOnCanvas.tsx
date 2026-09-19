@@ -13,7 +13,6 @@ export interface TryOnCanvasHandle {
 interface TryOnCanvasProps {
   imageDataUrl: string;
   shoe: ShoeProduct;
-  shoeIndex: number;
   onStatusChange?: (status: PhotoDetectionState) => void;
 }
 
@@ -24,7 +23,7 @@ interface TryOnCanvasProps {
  * completely untouched; only the transparent shoe layer is drawn on top.
  */
 export const TryOnCanvas = forwardRef<TryOnCanvasHandle, TryOnCanvasProps>(function TryOnCanvas(
-  { imageDataUrl, shoe, shoeIndex, onStatusChange },
+  { imageDataUrl, shoe, onStatusChange },
   ref
 ) {
   const imgRef = useRef<HTMLImageElement>(null);
@@ -143,7 +142,6 @@ export const TryOnCanvas = forwardRef<TryOnCanvasHandle, TryOnCanvasProps>(funct
         {ready && boxSize.width > 0 && (leftPoseRef.current || rightPoseRef.current) && (
           <ARViewer
             shoe={shoe}
-            shoeIndex={shoeIndex}
             leftPoseRef={leftPoseRef}
             rightPoseRef={rightPoseRef}
             aspect={aspect}

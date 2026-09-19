@@ -46,6 +46,7 @@ export function useFootTracking(videoEl: HTMLVideoElement | null, enabled: boole
   const lastTimeRef = useRef(0);
   const fpsRef = useRef({ frames: 0, last: performance.now(), value: 0 });
   const [modelStatus, setModelStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [retryToken, setRetryToken] = useState(0);
 
   // Reflect model load progress/failure into the user-facing status so the UI
   // never gets stuck showing "Starting camera…" — a slow or blocked network
@@ -63,6 +64,13 @@ export function useFootTracking(videoEl: HTMLVideoElement | null, enabled: boole
 
   useEffect(() => {
     let cancelled = false;
+    setModelStatus("loading");
+    // Also clears any pose from a previous session/model instance so a
+    // manual reload doesn't leave a stale foot pose on screen while the
+    // fresh landmarker spins up.
+    smoothersRef.current = { left: makeSmoothers(), right: makeSmoothers() };
+    setResult({ left: null, right: null, status: "loading-model", fps: 0 });
+
     // A hung fetch (no error, no response — common on flaky mobile networks)
     // would otherwise leave modelStatus at "loading" forever with no recovery
     // path, so time out and surface it as a failure instead.
@@ -104,7 +112,9 @@ export function useFootTracking(videoEl: HTMLVideoElement | null, enabled: boole
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
     };
-  }, []);
+  }, [retryToken]);
+
+  const reload = useCallback(() => setRetryToken((n) => n + 1), []);
 
   const tick = useCallback(() => {
     const video = videoEl;
@@ -200,5 +210,5 @@ export function useFootTracking(videoEl: HTMLVideoElement | null, enabled: boole
     };
   }, [enabled, modelStatus, tick]);
 
-  return { ...result, modelStatus };
+  return { ...result, modelStatus, reload };
 }

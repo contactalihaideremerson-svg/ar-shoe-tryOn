@@ -1,21 +1,15 @@
 import type { TrackingStatus } from "../../types/tracking";
 
-const STATUS_COPY: Record<TrackingStatus, { label: string; tone: "good" | "neutral" | "warn" | "bad" }> = {
-  idle: { label: "Starting camera…", tone: "neutral" },
-  "loading-model": { label: "Preparing tracking…", tone: "neutral" },
-  "no-feet": { label: "Move your feet into view", tone: "warn" },
-  "one-foot": { label: "One foot detected", tone: "neutral" },
-  tracking: { label: "Feet detected", tone: "good" },
-  "low-confidence": { label: "Low tracking confidence", tone: "warn" },
-  "camera-unavailable": { label: "Camera unavailable", tone: "bad" },
-  error: { label: "Tracking error", tone: "bad" },
-};
-
-const TONE_DOT: Record<string, string> = {
-  good: "bg-emerald-400",
-  neutral: "bg-neutral-400",
-  warn: "bg-amber-400",
-  bad: "bg-red-500",
+/**
+ * Only rendered for "something is detected" states — matches the reference
+ * design, where problem states (no feet, loading, error) are communicated
+ * via the centered AROverlayCard instead of this pill. Returns null rather
+ * than an empty pill so callers can render it unconditionally.
+ */
+const DETECTED_COPY: Partial<Record<TrackingStatus, string>> = {
+  tracking: "Foot detected",
+  "one-foot": "Foot detected",
+  "low-confidence": "Foot detected",
 };
 
 interface TrackingStatusPillProps {
@@ -23,15 +17,21 @@ interface TrackingStatusPillProps {
 }
 
 export function TrackingStatusPill({ status }: TrackingStatusPillProps) {
-  const copy = STATUS_COPY[status];
+  const label = DETECTED_COPY[status];
+  if (!label) return null;
+
   return (
     <div
-      className="pointer-events-none inline-flex items-center gap-1.5 rounded-full bg-black/55 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-sm"
+      className="pointer-events-none inline-flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
       role="status"
       aria-live="polite"
     >
-      <span className={["h-1.5 w-1.5 rounded-full", TONE_DOT[copy.tone]].join(" ")} aria-hidden="true" />
-      {copy.label}
+      <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white/25" aria-hidden="true">
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+          <path d="M20 6L9 17l-5-5" stroke="white" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+      {label}
     </div>
   );
 }

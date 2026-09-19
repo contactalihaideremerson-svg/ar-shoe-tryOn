@@ -28,5 +28,6 @@ export function useARTracking(videoEl: HTMLVideoElement | null, enabled: boolean
     modelStatus: tracking.modelStatus,
     left: tracking.left,
     right: tracking.right,
+    reload: tracking.reload,
   };
 }
