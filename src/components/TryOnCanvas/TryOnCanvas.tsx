@@ -145,7 +145,6 @@ export const TryOnCanvas = forwardRef<TryOnCanvasHandle, TryOnCanvasProps>(funct
             leftPoseRef={leftPoseRef}
             rightPoseRef={rightPoseRef}
             aspect={aspect}
-            mirrored={false}
             preserveDrawingBuffer
             onCanvasReady={(canvas) => {
               glCanvasRef.current = canvas;

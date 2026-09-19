@@ -9,8 +9,8 @@ interface ARViewerProps {
   shoe: ShoeProduct;
   leftPoseRef: RefObject<FootPose | null>;
   rightPoseRef: RefObject<FootPose | null>;
+  /** Aspect ratio of the actual on-screen container this canvas fills (not the raw video's intrinsic aspect ratio). */
   aspect: number;
-  mirrored: boolean;
   /** Needed so a still frame can be read back for photo-mode compositing/export. */
   preserveDrawingBuffer?: boolean;
   onCanvasReady?: (canvas: HTMLCanvasElement) => void;
@@ -31,14 +31,13 @@ export function ARViewer({
   leftPoseRef,
   rightPoseRef,
   aspect,
-  mirrored,
   preserveDrawingBuffer = false,
   onCanvasReady,
   modelTestMode = false,
   forceHidden = false,
   onLoadedChange,
 }: ARViewerProps) {
-  const viewport = computeViewportPlane(aspect, mirrored);
+  const viewport = computeViewportPlane(aspect);
 
   return (
     <Canvas

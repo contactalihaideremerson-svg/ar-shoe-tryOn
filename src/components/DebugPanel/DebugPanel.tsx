@@ -13,8 +13,13 @@ interface DebugPanelProps {
   cameraPermission: string;
   cameraError: string | null;
   facingMode: string;
+  mirrored: boolean;
   videoWidth: number;
   videoHeight: number;
+  containerWidth: number;
+  containerHeight: number;
+  cropX: number;
+  cropY: number;
   canvasWidth: number;
   canvasHeight: number;
   selectedShoeName: string;
@@ -28,6 +33,9 @@ interface DebugPanelProps {
   rightConfidence: number | null;
   footX: number | null;
   footY: number | null;
+  footScreenX: number | null;
+  footScreenY: number | null;
+  footLengthPx: number | null;
   footHeadingDeg: number | null;
   modelPosition: THREE.Vector3 | null;
   modelScale: number | null;
@@ -112,8 +120,11 @@ export function DebugPanel(props: DebugPanelProps) {
       <Row label="Permission" value={props.cameraPermission} />
       <Row label="Error" value={props.cameraError ?? "none"} />
       <Row label="Facing mode" value={props.facingMode} />
-      <Row label="Video dimensions" value={`${props.videoWidth} × ${props.videoHeight}`} />
-      <Row label="Canvas dimensions" value={`${props.canvasWidth} × ${props.canvasHeight}`} />
+      <Row label="Mirrored" value={String(props.mirrored)} />
+      <Row label="Video (intrinsic)" value={`${props.videoWidth} × ${props.videoHeight}`} />
+      <Row label="Container (display)" value={`${Math.round(props.containerWidth)} × ${Math.round(props.containerHeight)}`} />
+      <Row label="Canvas (drawing buffer)" value={`${props.canvasWidth} × ${props.canvasHeight}`} />
+      <Row label="Object-fit crop X/Y" value={`${Math.round(props.cropX)}px / ${Math.round(props.cropY)}px`} />
 
       <div className="mb-1 mt-2 font-sans font-semibold text-white/70">Shoe / Model</div>
       <Row label="Selected shoe" value={props.selectedShoeName} />
@@ -127,8 +138,11 @@ export function DebugPanel(props: DebugPanelProps) {
       <Row label="FPS" value={fmt(props.trackingFps, 1)} />
       <Row label="Left confidence" value={fmt(props.leftConfidence, 2)} />
       <Row label="Right confidence" value={fmt(props.rightConfidence, 2)} />
-      <Row label="Foot X" value={fmt(props.footX)} />
-      <Row label="Foot Y" value={fmt(props.footY)} />
+      <Row label="Foot X (0-1)" value={fmt(props.footX)} />
+      <Row label="Foot Y (0-1)" value={fmt(props.footY)} />
+      <Row label="Foot screen X" value={props.footScreenX === null ? "—" : `${Math.round(props.footScreenX)}px`} />
+      <Row label="Foot screen Y" value={props.footScreenY === null ? "—" : `${Math.round(props.footScreenY)}px`} />
+      <Row label="Foot length" value={props.footLengthPx === null ? "—" : `${Math.round(props.footLengthPx)}px`} />
       <Row label="Foot heading (deg)" value={fmt(props.footHeadingDeg, 1)} />
 
       <div className="mb-1 mt-2 font-sans font-semibold text-white/70">Model Transform</div>

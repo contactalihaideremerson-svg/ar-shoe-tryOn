@@ -22,7 +22,15 @@ export const POSE_LANDMARKS = {
   RIGHT_HIP: 24,
 } as const;
 
-const MIN_VISIBILITY = 0.35;
+/**
+ * Live tracking's default confidence bar. Temporal smoothing across many
+ * frames absorbs an occasional shaky detection, so this can stay lower than
+ * photo mode's one-shot threshold. Kept as an exported, named constant
+ * (rather than inlined) so it's a single, obvious place to retune during
+ * real-device testing instead of a magic number buried in a function body.
+ */
+export const LIVE_MIN_CONFIDENCE = 0.3;
+const MIN_VISIBILITY = LIVE_MIN_CONFIDENCE;
 
 function lerp3(a: Landmark, b: Landmark, t: number) {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };

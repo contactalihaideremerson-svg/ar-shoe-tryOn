@@ -25,7 +25,7 @@ import { shoes, getShoeById } from "../data/shoes";
 import { preloadShoeModel } from "../utils/modelLoader";
 import { captureVideoFrame, readFileAsImage, validateUploadedFile } from "../utils/imageProcessing";
 import { canRunLiveAR, detectWebGL } from "../utils/deviceDetection";
-import { computeViewportPlane, footPoseToTransform } from "../utils/shoeAlignment";
+import { computeViewportPlane, footPoseToTransform, computeCoverCrop } from "../utils/shoeAlignment";
 import { trackEvent } from "../utils/analytics";
 import type { ShoeProduct, ShoeCalibration } from "../types/shoe";
 
@@ -118,13 +118,22 @@ export function TryOn() {
     ...(calibrationOverrides[selectedShoe.id] ?? {}),
   };
 
-  const tracking = useARTracking(camera.videoRef.current, screenState === "live" && camera.isReady);
+  const mirrored = camera.facingMode === "user";
+  const wrapperRect = videoWrapperRef.current?.getBoundingClientRect();
+  const [videoAspect, setVideoAspect] = useState(16 / 9);
+  // The orthographic camera must frame the actual on-screen container, not the
+  // raw video's intrinsic aspect ratio — CameraView fills the container via
+  // `object-fit: cover`, so those two are almost never the same rectangle on a
+  // real phone. Falls back to videoAspect only before the container has been
+  // laid out at all (first render, wrapperRect not yet measured).
+  const containerAspect = wrapperRect && wrapperRect.height > 0 ? wrapperRect.width / wrapperRect.height : videoAspect;
+
+  const tracking = useARTracking(camera.videoRef.current, videoWrapperRef, screenState === "live" && camera.isReady, mirrored);
   // Dedicated instance purely to drive the 2D "Loading shoe…" / "Unable to
   // load" UI and the debug panel — separate from the clones ShoeInstance
   // loads for actual rendering, but backed by the same cache, so this adds
   // no extra network/parse work.
   const shoeModelUi = useShoeModel(screenState === "live" ? effectiveShoe.model : null);
-  const [videoAspect, setVideoAspect] = useState(16 / 9);
 
   // One-finger drag to nudge position, two-finger pinch/twist to resize and
   // rotate — a direct, physical way for the user to correct placement
@@ -136,8 +145,7 @@ export function TryOn() {
   // tracking every frame; these overrides are the offsetX/offsetY/scale/
   // rotationZ added on top (see shoeAlignment.ts), never a replacement.
   const hasManualAdjustment = selectedShoe.id in calibrationOverrides;
-  const liveViewport = computeViewportPlane(videoAspect, camera.facingMode === "user");
-  const wrapperRect = videoWrapperRef.current?.getBoundingClientRect();
+  const liveViewport = computeViewportPlane(containerAspect);
   const applyAdjustment = useCallback(
     (next: Partial<ShoeCalibration>) => {
       setCalibrationOverrides((prev) => {
@@ -433,14 +441,13 @@ export function TryOn() {
         className="relative flex-1 touch-none select-none overflow-hidden"
         {...dragScale.handlers}
       >
-        <CameraView ref={camera.setVideoEl} mirrored={camera.facingMode === "user"} />
+        <CameraView ref={camera.setVideoEl} mirrored={mirrored} />
 
         <ARViewer
           shoe={effectiveShoe}
           leftPoseRef={tracking.leftPoseRef}
           rightPoseRef={tracking.rightPoseRef}
-          aspect={videoAspect}
-          mirrored={camera.facingMode === "user"}
+          aspect={containerAspect}
           modelTestMode={modelTestMode}
           forceHidden={forceHideModel}
           preserveDrawingBuffer={debugQueryEnabled}
@@ -511,7 +518,6 @@ export function TryOn() {
             right={tracking.right}
             fps={tracking.fps}
             shoeId={selectedShoe.id}
-            mirrored={camera.facingMode === "user"}
             videoWidth={camera.videoRef.current?.videoWidth ?? 0}
             videoHeight={camera.videoRef.current?.videoHeight ?? 0}
           />
@@ -538,8 +544,29 @@ export function TryOn() {
             cameraPermission={camera.permission}
             cameraError={camera.error}
             facingMode={camera.facingMode}
+            mirrored={mirrored}
             videoWidth={camera.videoRef.current?.videoWidth ?? 0}
             videoHeight={camera.videoRef.current?.videoHeight ?? 0}
+            containerWidth={wrapperRect?.width ?? 0}
+            containerHeight={wrapperRect?.height ?? 0}
+            cropX={
+              computeCoverCrop({
+                videoWidth: camera.videoRef.current?.videoWidth ?? 0,
+                videoHeight: camera.videoRef.current?.videoHeight ?? 0,
+                containerWidth: wrapperRect?.width ?? 0,
+                containerHeight: wrapperRect?.height ?? 0,
+                mirrored,
+              }).cropX
+            }
+            cropY={
+              computeCoverCrop({
+                videoWidth: camera.videoRef.current?.videoWidth ?? 0,
+                videoHeight: camera.videoRef.current?.videoHeight ?? 0,
+                containerWidth: wrapperRect?.width ?? 0,
+                containerHeight: wrapperRect?.height ?? 0,
+                mirrored,
+              }).cropY
+            }
             canvasWidth={liveCanvasSize.width}
             canvasHeight={liveCanvasSize.height}
             selectedShoeName={selectedShoe.name}
@@ -553,18 +580,29 @@ export function TryOn() {
             rightConfidence={tracking.right?.confidence ?? null}
             footX={tracking.left?.center.x ?? tracking.right?.center.x ?? null}
             footY={tracking.left?.center.y ?? tracking.right?.center.y ?? null}
+            footScreenX={
+              tracking.left || tracking.right
+                ? (tracking.left?.center.x ?? tracking.right!.center.x) * (wrapperRect?.width ?? 0)
+                : null
+            }
+            footScreenY={
+              tracking.left || tracking.right
+                ? (tracking.left?.center.y ?? tracking.right!.center.y) * (wrapperRect?.height ?? 0)
+                : null
+            }
+            footLengthPx={
+              tracking.left || tracking.right
+                ? (tracking.left?.length ?? tracking.right!.length) * (wrapperRect?.height ?? 0)
+                : null
+            }
             footHeadingDeg={
               tracking.left ? (tracking.left.heading * 180) / Math.PI : tracking.right ? (tracking.right.heading * 180) / Math.PI : null
             }
             modelPosition={
-              tracking.left
-                ? footPoseToTransform(tracking.left, effectiveShoe, computeViewportPlane(videoAspect, camera.facingMode === "user")).position
-                : null
+              tracking.left ? footPoseToTransform(tracking.left, effectiveShoe, liveViewport).position : null
             }
             modelScale={
-              tracking.left
-                ? footPoseToTransform(tracking.left, effectiveShoe, computeViewportPlane(videoAspect, camera.facingMode === "user")).scale
-                : null
+              tracking.left ? footPoseToTransform(tracking.left, effectiveShoe, liveViewport).scale : null
             }
             modelRotationZDeg={effectiveShoe.rotationZ}
             modelTestMode={modelTestMode}

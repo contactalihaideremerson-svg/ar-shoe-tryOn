@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
 import { computeFootPose, computeLegReference } from "../utils/footGeometry";
+import { correctFootPoseForVideoGeometry } from "../utils/shoeAlignment";
 import { SmoothedVector3, SmoothedScalar } from "../utils/smoothing";
 import type { FootTrackingResult, TrackingStatus } from "../types/tracking";
 import * as THREE from "three";
@@ -30,7 +32,12 @@ function makeSmoothers(): FootSmoothers {
  * ankle/heel/foot-index keypoints are consumed — this is the most accurate
  * currently-available browser-based approach (see README limitations).
  */
-export function useFootTracking(videoEl: HTMLVideoElement | null, enabled: boolean) {
+export function useFootTracking(
+  videoEl: HTMLVideoElement | null,
+  containerRef: RefObject<HTMLElement | null>,
+  enabled: boolean,
+  mirrored: boolean
+) {
   const [result, setResult] = useState<FootTrackingResult>({
     left: null,
     right: null,
@@ -151,8 +158,25 @@ export function useFootTracking(videoEl: HTMLVideoElement | null, enabled: boole
       if (landmarks) {
         const leftLegRef = computeLegReference(landmarks, "left");
         const rightLegRef = computeLegReference(landmarks, "right");
-        const rawLeft = computeFootPose(landmarks, "left", leftLegRef);
-        const rawRight = computeFootPose(landmarks, "right", rightLegRef);
+        const detectedLeft = computeFootPose(landmarks, "left", leftLegRef);
+        const detectedRight = computeFootPose(landmarks, "right", rightLegRef);
+
+        // Re-express the raw (video-frame-normalized) pose in terms of the
+        // actual visible container BEFORE smoothing — the video is almost
+        // never the same aspect ratio as the container it's cover-fitted
+        // into, and doing this correction after smoothing would just smooth
+        // the wrong numbers. See shoeAlignment.ts for why this one function
+        // is the only place this conversion happens.
+        const containerRect = containerRef.current?.getBoundingClientRect();
+        const geometry = {
+          videoWidth: video.videoWidth,
+          videoHeight: video.videoHeight,
+          containerWidth: containerRect?.width ?? video.videoWidth,
+          containerHeight: containerRect?.height ?? video.videoHeight,
+          mirrored,
+        };
+        const rawLeft = detectedLeft ? correctFootPoseForVideoGeometry(detectedLeft, geometry) : null;
+        const rawRight = detectedRight ? correctFootPoseForVideoGeometry(detectedRight, geometry) : null;
 
         if (rawLeft) {
           const sm = smoothersRef.current.left;
@@ -200,7 +224,7 @@ export function useFootTracking(videoEl: HTMLVideoElement | null, enabled: boole
     }
 
     rafRef.current = requestAnimationFrame(tick);
-  }, [videoEl]);
+  }, [videoEl, containerRef, mirrored]);
 
   useEffect(() => {
     if (!enabled || modelStatus !== "ready") return;

@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
 import { computeFootPose, computeLegReference } from "../utils/footGeometry";
+import { correctFootPoseForVideoGeometry } from "../utils/shoeAlignment";
 import type { FootPose } from "../types/tracking";
 
 const WASM_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
@@ -48,12 +49,26 @@ export function usePhotoFootDetection() {
           setState("no-feet");
           return { left: null, right: null };
         }
-        const left = computeFootPose(landmarks, "left", computeLegReference(landmarks, "left"), PHOTO_MIN_CONFIDENCE);
-        const right = computeFootPose(landmarks, "right", computeLegReference(landmarks, "right"), PHOTO_MIN_CONFIDENCE);
-        if (!left && !right) {
+        const rawLeft = computeFootPose(landmarks, "left", computeLegReference(landmarks, "left"), PHOTO_MIN_CONFIDENCE);
+        const rawRight = computeFootPose(landmarks, "right", computeLegReference(landmarks, "right"), PHOTO_MIN_CONFIDENCE);
+        if (!rawLeft && !rawRight) {
           setState("no-feet");
           return { left: null, right: null };
         }
+        // TryOnCanvas always sizes its box to exactly match the photo's own
+        // aspect ratio (no object-fit crop for photo mode), so "container"
+        // here is just the image's own dimensions — routed through the same
+        // centralized function live mode uses rather than skipping it, so
+        // there's still only one place this conversion is implemented.
+        const geometry = {
+          videoWidth: image.naturalWidth,
+          videoHeight: image.naturalHeight,
+          containerWidth: image.naturalWidth,
+          containerHeight: image.naturalHeight,
+          mirrored: false,
+        };
+        const left = rawLeft ? correctFootPoseForVideoGeometry(rawLeft, geometry) : null;
+        const right = rawRight ? correctFootPoseForVideoGeometry(rawRight, geometry) : null;
         setState("success");
         return { left, right };
       } catch (err) {
