@@ -21,10 +21,15 @@ interface ARViewerProps {
 }
 
 /**
- * Transparent WebGL overlay rendered on top of the camera <video>. Pose refs
- * are mutated imperatively by the tracking loop (see useARTracking) so the
- * render loop stays decoupled from React's commit cycle — only useFrame
- * inside ShoeInstance touches the Three.js scene graph each tick.
+ * Transparent WebGL overlay rendered on top of the camera <video>.
+ *
+ * Layer order:
+ *   z-0  = camera video
+ *   z-10 = Three.js/WebGL shoe overlay
+ *   z-20 = UI controls
+ *
+ * Pose refs are mutated imperatively by the tracking loop so the render
+ * loop stays decoupled from React's commit cycle.
  */
 export function ARViewer({
   shoe,
@@ -41,11 +46,27 @@ export function ARViewer({
 
   return (
     <Canvas
-      className="pointer-events-none absolute inset-0 h-full w-full"
-      gl={{ alpha: true, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer }}
+      className="pointer-events-none absolute inset-0 z-10 block h-full w-full"
+      gl={{
+        alpha: true,
+        antialias: true,
+        powerPreference: "high-performance",
+        preserveDrawingBuffer,
+      }}
       dpr={[1, 2]}
-      style={{ background: "transparent" }}
-      onCreated={(state) => onCanvasReady?.(state.gl.domElement)}
+      style={{
+        background: "transparent",
+        opacity: 1,
+        visibility: "visible",
+      }}
+      onCreated={(state) => {
+        const canvas = state.gl.domElement;
+
+        // Make absolutely sure the WebGL canvas itself is transparent.
+        state.gl.setClearColor(0x000000, 0);
+
+        onCanvasReady?.(canvas);
+      }}
     >
       <ARScene
         shoe={shoe}
