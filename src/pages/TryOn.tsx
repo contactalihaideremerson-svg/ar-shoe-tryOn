@@ -35,7 +35,7 @@ import {
   computeCoverCrop,
 } from "../utils/shoeAlignment";
 import { trackEvent } from "../utils/analytics";
-import type { ShoeProduct, ShoeCalibration } from "../types/shoe";
+import type { FootSide, ShoeProduct, ShoeCalibration } from "../types/shoe";
 
 interface TryOnProps {}
 
@@ -111,6 +111,15 @@ export function TryOn(_props: TryOnProps) {
 
   const [selectedShoe, setSelectedShoe] =
     useState<ShoeProduct>(initialShoe);
+
+  /**
+   * Only one shoe is rendered at a time.
+   *
+   * The user can switch between the left and right foot without
+   * creating a second ShoeInstance.
+   */
+  const [activeSide, setActiveSide] =
+    useState<FootSide>("left");
 
   const [screenState, setScreenState] =
     useState<ScreenState>("checking");
@@ -216,15 +225,88 @@ export function TryOn(_props: TryOnProps) {
 
   const mirrored = camera.facingMode === "user";
 
-  const wrapperRect =
-    videoWrapperRef.current?.getBoundingClientRect();
-
   const [videoAspect, setVideoAspect] =
     useState(16 / 9);
 
+  /**
+   * Keep the Three.js viewport and the tracking coordinate space locked
+   * to the exact CSS size of the live camera container.
+   *
+   * Reading getBoundingClientRect() directly during render is not reactive:
+   * the element can resize after the render without causing React to render
+   * again. On a portrait phone this can leave the AR camera using the old
+   * 16:9 fallback while the actual camera surface is ~9:16, which creates a
+   * large visual offset between the detected foot and the GLB.
+   */
+  const [containerSize, setContainerSize] = useState({
+    width: 0,
+    height: 0,
+  });
+
+  useEffect(() => {
+    const element = videoWrapperRef.current;
+
+    if (!element) {
+      return;
+    }
+
+    const updateContainerSize = () => {
+      const rect =
+        element.getBoundingClientRect();
+
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0
+      ) {
+        return;
+      }
+
+      setContainerSize({
+        width: rect.width,
+        height: rect.height,
+      });
+    };
+
+    updateContainerSize();
+
+    const observer =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(
+            updateContainerSize
+          )
+        : null;
+
+    observer?.observe(element);
+
+    window.addEventListener(
+      "resize",
+      updateContainerSize
+    );
+
+    return () => {
+      observer?.disconnect();
+
+      window.removeEventListener(
+        "resize",
+        updateContainerSize
+      );
+    };
+  }, [screenState]);
+
+  const wrapperRect =
+    containerSize.width > 0 &&
+    containerSize.height > 0
+      ? {
+          width: containerSize.width,
+          height: containerSize.height,
+        }
+      : undefined;
+
   const containerAspect =
-    wrapperRect && wrapperRect.height > 0
-      ? wrapperRect.width / wrapperRect.height
+    containerSize.width > 0 &&
+    containerSize.height > 0
+      ? containerSize.width /
+        containerSize.height
       : videoAspect;
 
   const tracking = useARTracking(
@@ -743,6 +825,7 @@ export function TryOn(_props: TryOnProps) {
         {/* Live 3D AR layer */}
         <ARViewer
           shoe={effectiveShoe}
+          activeSide={activeSide}
           leftPoseRef={tracking.leftPoseRef}
           rightPoseRef={tracking.rightPoseRef}
           aspect={containerAspect}
@@ -1001,8 +1084,11 @@ export function TryOn(_props: TryOnProps) {
                 !forceHideModel &&
                 !!shoeModelUi.scene &&
                 (modelTestMode ||
-                  !!tracking.left ||
-                  !!tracking.right)
+                  !!(
+                    activeSide === "left"
+                      ? tracking.left
+                      : tracking.right
+                  ))
               }
               trackingStatus={
                 tracking.status
@@ -1019,47 +1105,57 @@ export function TryOn(_props: TryOnProps) {
                   ?.confidence ?? null
               }
               footX={
-                tracking.left?.center.x ??
-                tracking.right?.center.x ??
+                (activeSide === "left"
+                  ? tracking.left?.center.x
+                  : tracking.right?.center.x) ??
                 null
               }
               footY={
-                tracking.left?.center.y ??
-                tracking.right?.center.y ??
+                (activeSide === "left"
+                  ? tracking.left?.center.y
+                  : tracking.right?.center.y) ??
                 null
               }
               footScreenX={
-                tracking.left ||
-                tracking.right
-                  ? (tracking.left?.center.x ??
-                      tracking.right!.center.x) *
+                (activeSide === "left"
+                  ? tracking.left
+                  : tracking.right)
+                  ? (activeSide === "left"
+                      ? tracking.left!.center.x
+                      : tracking.right!.center.x) *
                     (wrapperRect?.width ??
                       0)
                   : null
               }
               footScreenY={
-                tracking.left ||
-                tracking.right
-                  ? (tracking.left?.center.y ??
-                      tracking.right!.center.y) *
+                (activeSide === "left"
+                  ? tracking.left
+                  : tracking.right)
+                  ? (activeSide === "left"
+                      ? tracking.left!.center.y
+                      : tracking.right!.center.y) *
                     (wrapperRect?.height ??
                       0)
                   : null
               }
               footLengthPx={
-                tracking.left ||
-                tracking.right
-                  ? (tracking.left?.length ??
-                      tracking.right!.length) *
+                (activeSide === "left"
+                  ? tracking.left
+                  : tracking.right)
+                  ? (activeSide === "left"
+                      ? tracking.left!.length
+                      : tracking.right!.length) *
                     (wrapperRect?.height ??
                       0)
                   : null
               }
               footHeadingDeg={
-                tracking.left
-                  ? (tracking.left.heading *
-                      180) /
-                    Math.PI
+                activeSide === "left"
+                  ? tracking.left
+                    ? (tracking.left.heading *
+                        180) /
+                      Math.PI
+                    : null
                   : tracking.right
                     ? (tracking.right.heading *
                         180) /
@@ -1067,18 +1163,26 @@ export function TryOn(_props: TryOnProps) {
                     : null
               }
               modelPosition={
-                tracking.left
+                (activeSide === "left"
+                  ? tracking.left
+                  : tracking.right)
                   ? footPoseToTransform(
-                      tracking.left,
+                      activeSide === "left"
+                        ? tracking.left!
+                        : tracking.right!,
                       effectiveShoe,
                       liveViewport
                     ).position
                   : null
               }
               modelScale={
-                tracking.left
+                (activeSide === "left"
+                  ? tracking.left
+                  : tracking.right)
                   ? footPoseToTransform(
-                      tracking.left,
+                      activeSide === "left"
+                        ? tracking.left!
+                        : tracking.right!,
                       effectiveShoe,
                       liveViewport
                     ).scale
@@ -1137,6 +1241,34 @@ export function TryOn(_props: TryOnProps) {
 
         {!trackingFatal && (
           <div className="safe-bottom pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col gap-4 bg-gradient-to-t from-black/85 via-black/50 to-transparent pb-4 pt-10">
+            {/* Single-foot selector: only the selected foot gets a shoe. */}
+            <div className="pointer-events-auto flex justify-center px-4">
+              <div className="flex items-center rounded-full bg-black/55 p-1 backdrop-blur-md">
+                {(["left", "right"] as FootSide[]).map((side) => {
+                  const isActive = activeSide === side;
+
+                  return (
+                    <button
+                      key={side}
+                      type="button"
+                      onClick={() => setActiveSide(side)}
+                      className={[
+                        "min-w-[92px] rounded-full px-4 py-2 text-xs font-semibold transition",
+                        isActive
+                          ? "bg-white text-neutral-900 shadow-sm"
+                          : "text-white/75 hover:bg-white/10 hover:text-white",
+                      ].join(" ")}
+                      aria-pressed={isActive}
+                    >
+                      {side === "left"
+                        ? "Left Foot"
+                        : "Right Foot"}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="pointer-events-auto">
               <ARShoeCarousel
                 selectedId={

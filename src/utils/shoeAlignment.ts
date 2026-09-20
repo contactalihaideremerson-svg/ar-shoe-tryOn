@@ -3,20 +3,19 @@ import type { FootPose } from "../types/tracking";
 import type { ShoeCalibration } from "../types/shoe";
 
 /**
- * Describes the geometric relationship between the raw video/image frame
- * MediaPipe measured landmarks against and the on-screen container it's
- * actually displayed in.
+ * Describes the relationship between the camera/video frame and the
+ * actual on-screen camera container.
  */
 export interface VideoGeometry {
-  /** Intrinsic pixel size of the video/image MediaPipe's normalized coordinates are relative to. */
   videoWidth: number;
   videoHeight: number;
 
-  /** Actual on-screen size of the container. */
   containerWidth: number;
   containerHeight: number;
 
-  /** Whether the displayed video is CSS-mirrored. */
+  /**
+   * true when the displayed front-camera video is CSS mirrored.
+   */
   mirrored: boolean;
 }
 
@@ -25,10 +24,17 @@ export interface PixelPoint {
   y: number;
 }
 
+/**
+ * Validate camera/container geometry before doing coordinate conversion.
+ */
 function hasValidGeometry(
   geo: VideoGeometry
 ): boolean {
   return (
+    Number.isFinite(geo.videoWidth) &&
+    Number.isFinite(geo.videoHeight) &&
+    Number.isFinite(geo.containerWidth) &&
+    Number.isFinite(geo.containerHeight) &&
     geo.videoWidth > 0 &&
     geo.videoHeight > 0 &&
     geo.containerWidth > 0 &&
@@ -37,39 +43,62 @@ function hasValidGeometry(
 }
 
 /**
- * Convert normalized MediaPipe coordinates into the actual visible
- * camera container.
+ * Convert normalized MediaPipe coordinates into actual screen/container
+ * coordinates.
  *
- * This accounts for:
- * - object-fit: cover
- * - video/container aspect-ratio difference
- * - front-camera mirroring
+ * MediaPipe:
+ *   x = 0..1 left → right
+ *   y = 0..1 top → bottom
+ *
+ * Camera:
+ *   object-fit: cover
+ *
+ * Therefore the displayed video may be cropped on either axis.
  */
 export function mapVideoPointToContainer(
   nx: number,
   ny: number,
   geo: VideoGeometry
 ): PixelPoint {
-  const mx = geo.mirrored ? 1 - nx : nx;
+  const safeX = Number.isFinite(nx) ? nx : 0.5;
+  const safeY = Number.isFinite(ny) ? ny : 0.5;
+
+  /**
+   * MediaPipe sees the original camera frame.
+   *
+   * The CSS front-camera preview is mirrored, so convert the x
+   * coordinate before applying the cover crop.
+   */
+  const mappedX = geo.mirrored
+    ? 1 - safeX
+    : safeX;
 
   if (!hasValidGeometry(geo)) {
     return {
-      x: mx * geo.containerWidth,
-      y: ny * geo.containerHeight,
+      x: mappedX * Math.max(geo.containerWidth, 1),
+      y: safeY * Math.max(geo.containerHeight, 1),
     };
   }
 
-  const coverScale = Math.max(
+  /**
+   * Equivalent to CSS:
+   *
+   * object-fit: cover
+   */
+  const scale = Math.max(
     geo.containerWidth / geo.videoWidth,
     geo.containerHeight / geo.videoHeight
   );
 
   const displayedWidth =
-    geo.videoWidth * coverScale;
+    geo.videoWidth * scale;
 
   const displayedHeight =
-    geo.videoHeight * coverScale;
+    geo.videoHeight * scale;
 
+  /**
+   * Amount cropped away from the displayed video.
+   */
   const cropX =
     (displayedWidth -
       geo.containerWidth) /
@@ -81,13 +110,20 @@ export function mapVideoPointToContainer(
     2;
 
   return {
-    x: mx * displayedWidth - cropX,
-    y: ny * displayedHeight - cropY,
+    x:
+      mappedX *
+        displayedWidth -
+      cropX,
+
+    y:
+      safeY *
+        displayedHeight -
+      cropY,
   };
 }
 
 /**
- * Debug-only helper showing how much of the raw video is cropped.
+ * Debug helper.
  */
 export function computeCoverCrop(
   geo: VideoGeometry
@@ -102,27 +138,29 @@ export function computeCoverCrop(
     };
   }
 
-  const coverScale = Math.max(
+  const scale = Math.max(
     geo.containerWidth / geo.videoWidth,
     geo.containerHeight / geo.videoHeight
   );
 
   return {
     cropX:
-      (geo.videoWidth * coverScale -
+      (geo.videoWidth * scale -
         geo.containerWidth) /
       2,
 
     cropY:
-      (geo.videoHeight * coverScale -
+      (geo.videoHeight * scale -
         geo.containerHeight) /
       2,
   };
 }
 
 /**
- * Re-express raw MediaPipe FootPose coordinates in the visible
- * camera container.
+ * Convert a raw MediaPipe FootPose into coordinates relative to the
+ * visible camera container.
+ *
+ * This MUST happen before the final 3D shoe transform.
  */
 export function correctFootPoseForVideoGeometry(
   pose: FootPose,
@@ -156,59 +194,109 @@ export function correctFootPoseForVideoGeometry(
       geo
     );
 
-  const cw =
-    geo.containerWidth || 1;
+  const width =
+    Math.max(
+      geo.containerWidth,
+      1
+    );
 
-  const ch =
-    geo.containerHeight || 1;
+  const height =
+    Math.max(
+      geo.containerHeight,
+      1
+    );
 
-  const lengthPx =
-    Math.hypot(
-      toePx.x - heelPx.x,
-      toePx.y - heelPx.y
-    ) || 0.05 * ch;
+  /**
+   * The actual projected foot axis on the screen.
+   */
+  const dx =
+    toePx.x -
+    heelPx.x;
+
+  const dy =
+    toePx.y -
+    heelPx.y;
+
+  const projectedLength =
+    Math.hypot(dx, dy);
+
+  /**
+   * Never allow zero-length geometry to create NaN rotations.
+   */
+  const safeLength =
+    Number.isFinite(projectedLength) &&
+    projectedLength > 0.5
+      ? projectedLength
+      : height * 0.05;
 
   const heading =
     Math.atan2(
-      toePx.y - heelPx.y,
-      toePx.x - heelPx.x
+      dy,
+      dx
     );
 
   return {
     ...pose,
 
     center: {
-      x: centerPx.x / cw,
-      y: centerPx.y / ch,
+      x:
+        centerPx.x /
+        width,
+
+      y:
+        centerPx.y /
+        height,
+
       z: pose.center.z,
     },
 
     heel: {
-      x: heelPx.x / cw,
-      y: heelPx.y / ch,
+      x:
+        heelPx.x /
+        width,
+
+      y:
+        heelPx.y /
+        height,
+
       z: pose.heel.z,
     },
 
     toe: {
-      x: toePx.x / cw,
-      y: toePx.y / ch,
+      x:
+        toePx.x /
+        width,
+
+      y:
+        toePx.y /
+        height,
+
       z: pose.toe.z,
     },
 
     ankle: {
-      x: anklePx.x / cw,
-      y: anklePx.y / ch,
+      x:
+        anklePx.x /
+        width,
+
+      y:
+        anklePx.y /
+        height,
+
       z: pose.ankle.z,
     },
 
-    length: lengthPx / ch,
+    /**
+     * Keep length in relation to the visible container height.
+     */
+    length:
+      safeLength /
+      height,
+
     heading,
   };
 }
 
-/**
- * World-space plane represented by the orthographic camera.
- */
 export interface ViewportPlane {
   width: number;
   height: number;
@@ -221,38 +309,57 @@ export interface ShoeTransform {
 }
 
 /**
- * A shoe is generally only slightly longer than the foot inside it.
- *
- * We deliberately use a conservative ratio here because the previous
- * 1.1 value produced an oversized model on the tested mobile camera.
+ * ---------------------------------------------------------------
+ * FOOTWEAR CALIBRATION CONSTANTS
+ * ---------------------------------------------------------------
  */
-const FOOT_TO_SHOE_LENGTH_RATIO = 0.78;
 
 /**
- * Small vertical adjustment.
+ * A shoe normally extends slightly beyond the detected heel/toe
+ * landmarks.
  *
- * The pose center is calculated around the mid-foot/ankle region.
- * Move the rendered shoe slightly toward the toes so the shoe's visual
- * center sits naturally over the foot.
+ * This is intentionally conservative. Individual products can
+ * override the result through ShoeCalibration.scale.
  */
-const SHOE_CENTER_TO_TOE_OFFSET = 0.08;
+const FOOT_TO_SHOE_LENGTH_RATIO = 1.0;
 
 /**
- * Prevent an accidental extreme calibration value from making the
- * live model effectively invisible or enormous.
+ * Location of the 3D model's visual center along the heel → toe axis.
  *
- * Normal calibration values remain untouched.
+ * 0   = heel
+ * 0.5 = middle of foot
+ * 1   = toe
+ *
+ * Most centered GLB models should use approximately 0.5.
  */
-const MIN_CALIBRATION_SCALE = 0.35;
-const MAX_CALIBRATION_SCALE = 2.5;
+const SHOE_ANCHOR_ALONG_FOOT = 0.5;
 
 /**
- * Converts a tracked FootPose into a Three.js transform.
+ * Protect the renderer from broken calibration values.
+ */
+const MIN_CALIBRATION_SCALE = 0.25;
+const MAX_CALIBRATION_SCALE = 4;
+
+/**
+ * Protect against extremely tiny/huge projected foot measurements.
+ */
+const MIN_FOOT_LENGTH = 0.01;
+const MAX_FOOT_LENGTH = 1.2;
+
+/**
+ * Convert a tracked foot into a 3D shoe transform.
  *
- * Input pose is expected to already be corrected for:
- * - object-fit: cover
- * - container dimensions
- * - front-camera mirroring
+ * Coordinate system:
+ *
+ * Camera:
+ *   x → right
+ *   y → down
+ *
+ * Three.js orthographic plane:
+ *   x → right
+ *   y → up
+ *
+ * Therefore Y must be inverted when moving from screen to Three.js.
  */
 export function footPoseToTransform(
   pose: FootPose,
@@ -260,113 +367,165 @@ export function footPoseToTransform(
   viewport: ViewportPlane
 ): ShoeTransform {
   /**
-   * ---------------------------------------------------------
-   * 1. FOOT POSITION → WORLD POSITION
-   * ---------------------------------------------------------
-   *
-   * MediaPipe/container coordinates:
-   *   x: 0 = left, 1 = right
-   *   y: 0 = top, 1 = bottom
-   *
-   * Three.js orthographic world:
-   *   x: -width/2 = left
-   *   x: +width/2 = right
-   *   y: +height/2 = top
-   *   y: -height/2 = bottom
+   * ---------------------------------------------------------------
+   * 1. VALIDATE FOOT GEOMETRY
+   * ---------------------------------------------------------------
    */
-  let normalizedX =
-    THREE.MathUtils.clamp(
-      pose.center.x,
-      0,
-      1
-    );
 
-  let normalizedY =
-    THREE.MathUtils.clamp(
-      pose.center.y,
-      0,
-      1
-    );
+  const safeViewportWidth =
+    Number.isFinite(viewport.width) &&
+    viewport.width > 0
+      ? viewport.width
+      : 1;
 
-  /**
-   * Move the visual shoe center slightly toward the toe.
-   *
-   * This is based on the heel → toe direction rather than simply
-   * shifting vertically, so it also behaves correctly when the foot
-   * is rotated inside the camera frame.
-   */
-  const toeDirection = new THREE.Vector2(
-    pose.toe.x - pose.heel.x,
-    pose.toe.y - pose.heel.y
-  );
+  const safeViewportHeight =
+    Number.isFinite(viewport.height) &&
+    viewport.height > 0
+      ? viewport.height
+      : 1;
 
-  if (toeDirection.lengthSq() > 0.000001) {
-    toeDirection.normalize();
-
-    normalizedX +=
-      toeDirection.x *
-      pose.length *
-      SHOE_CENTER_TO_TOE_OFFSET;
-
-    normalizedY +=
-      toeDirection.y *
-      pose.length *
-      SHOE_CENTER_TO_TOE_OFFSET;
-  }
-
-  normalizedX =
-    THREE.MathUtils.clamp(
-      normalizedX,
-      0,
-      1
-    );
-
-  normalizedY =
-    THREE.MathUtils.clamp(
-      normalizedY,
-      0,
-      1
-    );
-
-  const worldX =
-    (normalizedX - 0.5) *
-    viewport.width;
-
-  const worldY =
-    (0.5 - normalizedY) *
-    viewport.height;
-
-  /**
-   * ---------------------------------------------------------
-   * 2. FOOT LENGTH → SHOE SCALE
-   * ---------------------------------------------------------
-   *
-   * pose.length is expressed as a fraction of the visible
-   * container height.
-   *
-   * Convert it into Three.js world units using viewport.height.
-   */
-  const safeFootLength =
+  const rawLength =
     Number.isFinite(pose.length) &&
-    pose.length > 0.001
+    pose.length > 0
       ? pose.length
       : 0.05;
 
-  const footWorldLength =
-    safeFootLength *
-    viewport.height;
+  const footLength =
+    THREE.MathUtils.clamp(
+      rawLength,
+      MIN_FOOT_LENGTH,
+      MAX_FOOT_LENGTH
+    );
 
   /**
-   * The previous ratio made the test model considerably larger
-   * than the actual foot. Use a conservative physical ratio.
+   * ---------------------------------------------------------------
+   * 2. BUILD THE SCREEN-SPACE FOOT AXIS
+   * ---------------------------------------------------------------
+   *
+   * heel → toe
+   *
+   * This is the most important line in the entire alignment system.
+   *
+   * Position, rotation and scale are all derived from this geometry.
    */
-  const targetShoeWorldLength =
+
+  const heelX =
+    Number.isFinite(pose.heel.x)
+      ? pose.heel.x
+      : pose.center.x;
+
+  const heelY =
+    Number.isFinite(pose.heel.y)
+      ? pose.heel.y
+      : pose.center.y;
+
+  const toeX =
+    Number.isFinite(pose.toe.x)
+      ? pose.toe.x
+      : pose.center.x;
+
+  const toeY =
+    Number.isFinite(pose.toe.y)
+      ? pose.toe.y
+      : pose.center.y;
+
+  let axisX =
+    toeX -
+    heelX;
+
+  let axisY =
+    toeY -
+    heelY;
+
+  const axisLength =
+    Math.hypot(
+      axisX,
+      axisY
+    );
+
+  if (
+    !Number.isFinite(axisLength) ||
+    axisLength < 0.00001
+  ) {
+    axisX = 1;
+    axisY = 0;
+  } else {
+    axisX /= axisLength;
+    axisY /= axisLength;
+  }
+
+  /**
+   * ---------------------------------------------------------------
+   * 3. FIND EXACT SHOE ANCHOR ON THE FOOT
+   * ---------------------------------------------------------------
+   *
+   * Instead of taking the ankle as the shoe center, calculate a point
+   * directly on the heel → toe axis.
+   *
+   * This means the shoe remains attached to the foot when the foot
+   * moves, rotates or changes direction.
+   */
+
+  const anchorX =
+    heelX +
+    (toeX - heelX) *
+      SHOE_ANCHOR_ALONG_FOOT;
+
+  const anchorY =
+    heelY +
+    (toeY - heelY) *
+      SHOE_ANCHOR_ALONG_FOOT;
+
+  /**
+   * Calibration offsets are expressed in Three.js world units,
+   * so they are added after the camera-space conversion.
+   */
+  const normalizedX =
+    THREE.MathUtils.clamp(
+      anchorX,
+      0,
+      1
+    );
+
+  const normalizedY =
+    THREE.MathUtils.clamp(
+      anchorY,
+      0,
+      1
+    );
+
+  /**
+   * Screen → Three.js.
+   */
+  const worldX =
+    (normalizedX - 0.5) *
+    safeViewportWidth;
+
+  const worldY =
+    (0.5 - normalizedY) *
+    safeViewportHeight;
+
+  /**
+   * ---------------------------------------------------------------
+   * 4. FOOT LENGTH → SHOE SIZE
+   * ---------------------------------------------------------------
+   *
+   * Because FootPose.length is normalized relative to the visible
+   * camera container height, multiplying by viewport.height converts
+   * it into the same world-space coordinate system used by the
+   * orthographic camera.
+   */
+
+  const footWorldLength =
+    footLength *
+    safeViewportHeight;
+
+  const targetShoeLength =
     footWorldLength *
     FOOT_TO_SHOE_LENGTH_RATIO;
 
   /**
-   * Respect per-shoe calibration but protect against accidental
-   * extreme values.
+   * Individual shoe calibration.
    */
   const rawCalibrationScale =
     Number.isFinite(
@@ -376,78 +535,133 @@ export function footPoseToTransform(
       ? calibration.scale
       : 1;
 
-  const safeCalibrationScale =
+  const calibrationScale =
     THREE.MathUtils.clamp(
       rawCalibrationScale,
       MIN_CALIBRATION_SCALE,
       MAX_CALIBRATION_SCALE
     );
 
-  const scale =
-    targetShoeWorldLength *
-    safeCalibrationScale;
+  const finalScale =
+    targetShoeLength *
+    calibrationScale;
 
   /**
-   * ---------------------------------------------------------
-   * 3. ROTATION
-   * ---------------------------------------------------------
+   * ---------------------------------------------------------------
+   * 5. FOOT ROTATION
+   * ---------------------------------------------------------------
    *
-   * MediaPipe heading is the angle from heel → toe in screen space.
+   * pose.heading is the actual heel → toe angle on screen.
    *
-   * The shoe model's forward axis is assumed to be +Z after
-   * normalization.
+   * Three.js's XY plane uses:
+   *
+   *   +X = right
+   *   +Y = up
+   *
+   * The shoe's conventional forward direction is treated as +Y
+   * on the screen plane.
+   *
+   * Therefore:
+   *
+   * screenAngle - PI/2
+   *
+   * maps the foot axis into the Three.js XY plane.
    */
+
   const screenRotationZ =
-    -(pose.heading - Math.PI / 2);
+    pose.heading -
+    Math.PI / 2;
 
-  const euler =
-    new THREE.Euler(
-      THREE.MathUtils.degToRad(
+  const rotationX =
+    THREE.MathUtils.degToRad(
+      Number.isFinite(
         calibration.rotationX
-      ),
+      )
+        ? calibration.rotationX
+        : 0
+    );
 
-      THREE.MathUtils.degToRad(
+  const rotationY =
+    THREE.MathUtils.degToRad(
+      Number.isFinite(
         calibration.rotationY
-      ),
+      )
+        ? calibration.rotationY
+        : 0
+    );
 
-      screenRotationZ +
-        THREE.MathUtils.degToRad(
-          calibration.rotationZ
-        ),
-
-      "XYZ"
+  const rotationZ =
+    screenRotationZ +
+    THREE.MathUtils.degToRad(
+      Number.isFinite(
+        calibration.rotationZ
+      )
+        ? calibration.rotationZ
+        : 0
     );
 
   const quaternion =
-    new THREE.Quaternion().setFromEuler(
-      euler
-    );
+    new THREE.Quaternion();
+
+  quaternion.setFromEuler(
+    new THREE.Euler(
+      rotationX,
+      rotationY,
+      rotationZ,
+      "XYZ"
+    )
+  );
 
   /**
-   * ---------------------------------------------------------
-   * 4. FINAL POSITION
-   * ---------------------------------------------------------
+   * ---------------------------------------------------------------
+   * 6. FINAL POSITION
+   * ---------------------------------------------------------------
    *
-   * Calibration offsets are applied after automatic tracking.
+   * Automatic foot tracking is calculated first.
+   * Manual calibration offsets are applied afterwards.
    */
+
+  const offsetX =
+    Number.isFinite(
+      calibration.offsetX
+    )
+      ? calibration.offsetX
+      : 0;
+
+  const offsetY =
+    Number.isFinite(
+      calibration.offsetY
+    )
+      ? calibration.offsetY
+      : 0;
+
+  const offsetZ =
+    Number.isFinite(
+      calibration.offsetZ
+    )
+      ? calibration.offsetZ
+      : 0;
+
   const position =
     new THREE.Vector3(
-      worldX + calibration.offsetX,
-      worldY + calibration.offsetY,
-      calibration.offsetZ
+      worldX + offsetX,
+      worldY + offsetY,
+      offsetZ
     );
 
   return {
     position,
     quaternion,
-    scale,
+    scale: Math.max(
+      finalScale,
+      0.0001
+    ),
   };
 }
 
 /**
- * Computes the world-space plane represented by the orthographic camera.
- *
- * The aspect must be the actual on-screen container aspect ratio.
+ * Calculate the Three.js orthographic plane that matches the actual
+ * camera container.
  */
 export function computeViewportPlane(
   aspect: number,
@@ -459,9 +673,18 @@ export function computeViewportPlane(
       ? aspect
       : 1;
 
+  const safeHeight =
+    Number.isFinite(baseHeight) &&
+    baseHeight > 0
+      ? baseHeight
+      : 4;
+
   return {
     width:
-      baseHeight * safeAspect,
-    height: baseHeight,
+      safeHeight *
+      safeAspect,
+
+    height:
+      safeHeight,
   };
 }

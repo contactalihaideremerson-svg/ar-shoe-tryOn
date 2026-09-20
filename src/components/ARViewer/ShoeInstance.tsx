@@ -2,16 +2,21 @@ import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+
 import { useShoeModel } from "../../hooks/useShoeModel";
+
 import {
   footPoseToTransform,
   type ViewportPlane,
 } from "../../utils/shoeAlignment";
+
 import {
   SmoothedQuaternion,
   SmoothedScalar,
 } from "../../utils/smoothing";
+
 import type { FootPose } from "../../types/tracking";
+
 import type {
   FootSide,
   ShoeCalibration,
@@ -23,16 +28,262 @@ interface ShoeInstanceProps {
   modelUrl: string;
   calibration: ShoeCalibration;
   viewport: ViewportPlane;
-  /** Mirrors the mesh on X for the opposite foot when the source .glb only models one shoe. */
   mirrorMesh: boolean;
-  /**
-   * Diagnostic-only: when true, ignore tracking entirely and place the model
-   * fixed at the viewport center at a fixed readable size.
-   */
   modelTestMode?: boolean;
-  /** Diagnostic-only: force the model invisible. */
   forceHidden?: boolean;
   onLoadedChange?: (loaded: boolean) => void;
+}
+
+const TRACKING_GRACE_MS = 180;
+const MIN_MODEL_LENGTH = 0.00001;
+
+/**
+ * The supplied shoe1.glb contains TWO shoes:
+ *
+ * - nodes containing "rConv" belong to the right shoe
+ * - nodes containing "lConv" belong to the left shoe
+ *
+ * We extract only the requested side before calculating the
+ * bounding box / scale.
+ */
+function isNodeForSide(
+  object: THREE.Object3D,
+  side: FootSide
+): boolean {
+  const name = object.name.toLowerCase();
+
+  const isRight =
+    name.includes("rconv") ||
+    name.includes("_rivet");
+
+  const isLeft =
+    name.includes("lconv") ||
+    name.includes("_lrivet");
+
+  if (side === "right") {
+    return isRight && !isLeft;
+  }
+
+  return isLeft && !isRight;
+}
+
+/**
+ * Hide the opposite shoe inside shoe1.glb.
+ *
+ * This GLB contains both left and right shoes as separate root nodes.
+ */
+function isolateFootSide(
+  object: THREE.Object3D,
+  side: FootSide
+): void {
+  object.traverse((child) => {
+    const name = child.name.toLowerCase();
+
+    if (!name) return;
+
+    const right =
+      name.includes("rconv") ||
+      name.includes("_rivet");
+
+    const left =
+      name.includes("lconv") ||
+      name.includes("_lrivet");
+
+    /*
+     * If the node clearly belongs to one side,
+     * show only the requested side.
+     */
+    if (right || left) {
+      child.visible =
+        side === "right" ? right && !left : left && !right;
+    }
+  });
+}
+
+/**
+ * Calculate the visible model dimensions.
+ */
+function getModelBounds(
+  object: THREE.Object3D
+): THREE.Box3 {
+  object.updateMatrixWorld(true);
+
+  return new THREE.Box3().setFromObject(object);
+}
+
+/**
+ * Get the actual heel-to-toe length.
+ *
+ * The supplied GLB is not a simple X/Z aligned model.
+ * Instead of blindly assuming X or Z, we use the largest
+ * horizontal dimension after isolating one shoe.
+ */
+function getModelLength(
+  object: THREE.Object3D
+): number {
+  const box = getModelBounds(object);
+
+  if (box.isEmpty()) {
+    return 1;
+  }
+
+  const size = new THREE.Vector3();
+
+  box.getSize(size);
+
+  const horizontalLength = Math.max(
+    Math.abs(size.x),
+    Math.abs(size.z)
+  );
+
+  if (
+    !Number.isFinite(horizontalLength) ||
+    horizontalLength < MIN_MODEL_LENGTH
+  ) {
+    return 1;
+  }
+
+  return horizontalLength;
+}
+
+/**
+ * Center only the isolated shoe.
+ */
+function centerModel(
+  object: THREE.Object3D
+): void {
+  const box = getModelBounds(object);
+
+  if (box.isEmpty()) {
+    return;
+  }
+
+  const center = new THREE.Vector3();
+
+  box.getCenter(center);
+
+  object.position.sub(center);
+
+  object.updateMatrixWorld(true);
+}
+
+/**
+ * Find which horizontal axis is the actual shoe length.
+ *
+ * The provided GLB has a diagonal-looking coordinate system,
+ * so we do not apply an arbitrary 90 degree rotation here.
+ *
+ * The actual foot heading from MediaPipe controls the final
+ * world rotation.
+ */
+function normalizeModelOrientation(
+  object: THREE.Object3D
+): void {
+  const box = getModelBounds(object);
+
+  if (box.isEmpty()) {
+    return;
+  }
+
+  const size = new THREE.Vector3();
+
+  box.getSize(size);
+
+  /*
+   * Do NOT rotate the GLB based purely on X/Z.
+   *
+   * shoe1.glb contains both shoe meshes and its geometry is
+   * already authored with its own local orientation.
+   *
+   * Rotating it here was one of the reasons the shoe could
+   * appear disconnected from the foot.
+   */
+  void size;
+}
+
+/**
+ * Prepare the GLB for AR.
+ */
+function prepareModel(
+  source: THREE.Object3D,
+  side: FootSide
+): {
+  object: THREE.Object3D;
+  nativeLength: number;
+} {
+  const object = source.clone(true);
+
+  /*
+   * Only keep the requested shoe.
+   */
+  isolateFootSide(object, side);
+
+  object.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+
+    if (!mesh.isMesh) {
+      return;
+    }
+
+    mesh.frustumCulled = false;
+
+    /*
+     * Ensure invisible opposite-side meshes really stay invisible.
+     */
+    if (!isNodeForSide(child, side)) {
+      const name = child.name.toLowerCase();
+
+      const belongsToOtherSide =
+        side === "right"
+          ? name.includes("lconv") ||
+            name.includes("_lrivet")
+          : name.includes("rconv") ||
+            name.includes("_rivet");
+
+      if (belongsToOtherSide) {
+        child.visible = false;
+      }
+    }
+
+    if (mesh.material) {
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach((material) => {
+          material.needsUpdate = true;
+        });
+      } else {
+        mesh.material.needsUpdate = true;
+      }
+    }
+  });
+
+  /*
+   * Update world matrices before measuring.
+   */
+  object.updateMatrixWorld(true);
+
+  normalizeModelOrientation(object);
+
+  /*
+   * Measure ONLY the selected shoe.
+   */
+  const nativeLength =
+    getModelLength(object);
+
+  /*
+   * Center ONLY the selected shoe.
+   */
+  centerModel(object);
+
+  object.updateMatrixWorld(true);
+
+  return {
+    object,
+    nativeLength:
+      Number.isFinite(nativeLength) &&
+      nativeLength > MIN_MODEL_LENGTH
+        ? nativeLength
+        : 1,
+  };
 }
 
 export function ShoeInstance({
@@ -46,86 +297,106 @@ export function ShoeInstance({
   forceHidden = false,
   onLoadedChange,
 }: ShoeInstanceProps) {
-  const { scene } = useShoeModel(modelUrl);
+  const { scene } =
+    useShoeModel(modelUrl);
 
-  const groupRef = useRef<THREE.Group>(null);
+  const groupRef =
+    useRef<THREE.Group>(null);
 
-  const quatSmoother = useRef(
-    new SmoothedQuaternion()
-  );
+  const modelRootRef =
+    useRef<THREE.Group>(null);
 
-  const scaleSmoother = useRef(
-    new SmoothedScalar()
-  );
+  const quatSmoother =
+    useRef(
+      new SmoothedQuaternion()
+    );
 
-  const wasVisible = useRef(false);
+  const scaleSmoother =
+    useRef(
+      new SmoothedScalar()
+    );
+
+  const modelScene =
+    useRef<THREE.Object3D | null>(
+      null
+    );
+
+  const nativeModelLength =
+    useRef(1);
+
+  const lastTransform =
+    useRef<{
+      position: THREE.Vector3;
+      quaternion: THREE.Quaternion;
+      scale: number;
+      timestamp: number;
+    } | null>(null);
 
   /**
-   * Create an independent scene clone for this ShoeInstance.
+   * Prepare model whenever:
    *
-   * The same GLB can be used for left and right shoes, but each rendered
-   * instance needs its own scene graph so one side cannot re-parent or
-   * otherwise interfere with the other side.
+   * - GLB changes
+   * - selected foot changes
    */
-  const modelScene = useRef<THREE.Object3D | null>(
-    null
-  );
-
   useEffect(() => {
     if (!scene) {
       modelScene.current = null;
+      nativeModelLength.current = 1;
+
       onLoadedChange?.(false);
+
       return;
     }
 
-    const clonedScene = scene.clone(true);
+    const prepared =
+      prepareModel(
+        scene,
+        side
+      );
 
-    clonedScene.traverse((object) => {
-      const mesh = object as THREE.Mesh;
+    modelScene.current =
+      prepared.object;
 
-      if (mesh.isMesh) {
-        mesh.frustumCulled = false;
+    nativeModelLength.current =
+      prepared.nativeLength;
 
-        if (mesh.material) {
-          if (Array.isArray(mesh.material)) {
-            mesh.material.forEach((material) => {
-              material.needsUpdate = true;
-            });
-          } else {
-            mesh.material.needsUpdate = true;
-          }
-        }
-      }
-    });
-
-    modelScene.current = clonedScene;
     onLoadedChange?.(true);
 
     return () => {
       modelScene.current = null;
+      nativeModelLength.current = 1;
     };
-  }, [scene, onLoadedChange]);
+  }, [
+    scene,
+    side,
+    onLoadedChange,
+  ]);
 
-  useFrame((_, delta) => {
-    const group = groupRef.current;
+  useFrame(() => {
+    const group =
+      groupRef.current;
 
-    if (!group) return;
+    if (!group) {
+      return;
+    }
 
+    /**
+     * ---------------------------------------------------------
+     * FORCE HIDDEN
+     * ---------------------------------------------------------
+     */
     if (forceHidden) {
       group.visible = false;
       return;
     }
 
     /**
+     * ---------------------------------------------------------
      * MODEL TEST MODE
-     *
-     * Completely ignores tracking and puts the model in an obvious,
-     * readable position. This is useful to verify that Three.js + GLB
-     * rendering itself is working.
+     * ---------------------------------------------------------
      */
     if (modelTestMode) {
       group.visible = true;
-      wasVisible.current = true;
 
       group.position.set(
         mirrorMesh
@@ -137,177 +408,201 @@ export function ShoeInstance({
 
       group.quaternion.identity();
 
-      const testSize =
+      /*
+       * Test mode now uses the actual normalized shoe length.
+       * This makes the model much easier to inspect.
+       */
+      const desiredTestLength =
         Math.min(
           viewport.width,
           viewport.height
-        ) * 0.32;
+        ) * 0.45;
 
-      group.scale.setScalar(testSize);
-
-      quatSmoother.current.reset();
-      scaleSmoother.current.reset();
-
-      void delta;
-      return;
-    }
-
-    const pose = poseRef.current;
-
-    /**
-     * IMPORTANT:
-     *
-     * Previously the model was completely hidden whenever tracking had no
-     * pose. That meant the user could open the camera and see absolutely
-     * nothing until the tracking pipeline produced a pose.
-     *
-     * We now keep the model visible as soon as the GLB is loaded.
-     * Once a real pose arrives, the normal tracking transform takes over.
-     */
-    if (!pose) {
-      group.visible = true;
-      wasVisible.current = true;
-
-      /**
-       * Fallback live position.
-       *
-       * Put the shoe slightly below the center of the camera view.
-       * This guarantees that a successfully loaded GLB is visible even
-       * before foot tracking has produced a pose.
-       */
-      const fallbackX = mirrorMesh
-        ? viewport.width * 0.18
-        : -viewport.width * 0.18;
-
-      const fallbackY =
-        -viewport.height * 0.12;
-
-      group.position.set(
-        fallbackX,
-        fallbackY,
-        0
-      );
-
-      group.quaternion.identity();
-
-      /**
-       * Use calibration scale when available, but guarantee a readable
-       * minimum size for the live fallback.
-       */
-      const baseFallbackSize =
-        Math.min(
-          viewport.width,
-          viewport.height
-        ) * 0.22;
-
-      const calibrationScale =
-        Number.isFinite(calibration.scale) &&
-        calibration.scale > 0
-          ? calibration.scale
-          : 1;
-
-      const fallbackScale =
-        baseFallbackSize *
-        calibrationScale;
+      const nativeLength =
+        Math.max(
+          nativeModelLength.current,
+          MIN_MODEL_LENGTH
+        );
 
       group.scale.setScalar(
-        Math.max(
-          fallbackScale,
-          Math.min(
-            viewport.width,
-            viewport.height
-          ) * 0.12
-        )
+        desiredTestLength /
+          nativeLength
       );
 
       quatSmoother.current.reset();
       scaleSmoother.current.reset();
 
-      void delta;
       return;
     }
 
     /**
-     * REAL FOOT TRACKING
-     *
-     * As soon as the tracker produces a pose, use the exact existing
-     * alignment system. Manual calibration continues to work because
-     * footPoseToTransform receives the complete ShoeCalibration object.
+     * ---------------------------------------------------------
+     * REAL TRACKING
+     * ---------------------------------------------------------
      */
-    if (!wasVisible.current) {
-      group.visible = true;
-      wasVisible.current = true;
+    const pose =
+      poseRef.current;
+
+    /*
+     * Do not invent a shoe position if tracking is lost.
+     */
+    if (!pose) {
+      const now =
+        performance.now();
+
+      const previous =
+        lastTransform.current;
+
+      if (
+        previous &&
+        now -
+          previous.timestamp <
+          TRACKING_GRACE_MS
+      ) {
+        group.visible = true;
+
+        group.position.copy(
+          previous.position
+        );
+
+        group.quaternion.copy(
+          previous.quaternion
+        );
+
+        group.scale.setScalar(
+          previous.scale
+        );
+
+        return;
+      }
+
+      group.visible = false;
+
+      quatSmoother.current.reset();
+      scaleSmoother.current.reset();
+
+      return;
     }
 
-    const transform = footPoseToTransform(
-      pose,
-      calibration,
-      viewport
-    );
+    /**
+     * ---------------------------------------------------------
+     * FOOT → SHOE TRANSFORM
+     * ---------------------------------------------------------
+     */
+    const transform =
+      footPoseToTransform(
+        pose,
+        calibration,
+        viewport
+      );
 
-    group.visible = true;
+    /**
+     * transform.scale represents the desired
+     * screen/world shoe length.
+     *
+     * Convert it into a multiplier based on
+     * the REAL selected shoe length.
+     */
+    const safeNativeLength =
+      Number.isFinite(
+        nativeModelLength.current
+      ) &&
+      nativeModelLength.current >
+        MIN_MODEL_LENGTH
+        ? nativeModelLength.current
+        : 1;
 
+    const normalizedScale =
+      transform.scale /
+      safeNativeLength;
+
+    const safeScale =
+      Number.isFinite(
+        normalizedScale
+      )
+        ? THREE.MathUtils.clamp(
+            normalizedScale,
+            0.0001,
+            100000
+          )
+        : 0.0001;
+
+    /**
+     * Position
+     */
     group.position.copy(
       transform.position
     );
 
-    const smoothedQuat =
+    /**
+     * Rotation
+     */
+    const smoothedQuaternion =
       quatSmoother.current.update(
         transform.quaternion
       );
 
     group.quaternion.copy(
-      smoothedQuat
+      smoothedQuaternion
     );
-
-    const smoothedScale =
-      scaleSmoother.current.update(
-        transform.scale
-      );
 
     /**
-     * Protect against an invalid/near-zero scale coming from tracking.
-     * A zero or extremely tiny scale makes the model effectively invisible.
+     * Scale
      */
-    const minimumScale = Math.max(
-      0.0001,
-      Math.min(
-        viewport.width,
-        viewport.height
-      ) * 0.001
-    );
+    const smoothedScale =
+      scaleSmoother.current.update(
+        safeScale
+      );
 
     group.scale.setScalar(
       Math.max(
         smoothedScale,
-        minimumScale
+        0.0001
       )
     );
 
-    void delta;
+    group.visible = true;
+
+    /**
+     * Save last valid transform.
+     */
+    lastTransform.current = {
+      position:
+        transform.position.clone(),
+
+      quaternion:
+        smoothedQuaternion.clone(),
+
+      scale:
+        Math.max(
+          smoothedScale,
+          0.0001
+        ),
+
+      timestamp:
+        performance.now(),
+    };
   });
 
+  /**
+   * Model isn't loaded yet.
+   */
   if (!scene) {
     return null;
   }
 
   const renderedScene =
-    modelScene.current ?? scene;
+    modelScene.current ??
+    scene;
 
   return (
     <group
       ref={groupRef}
-      visible={true}
+      visible={false}
       data-side={side}
     >
-      {/*
-        Mirror only the mesh contents.
-
-        The outer group remains responsible for the tracked
-        position/rotation/scale. This prevents the mirror operation
-        from interfering with the tracking transform.
-      */}
       <group
+        ref={modelRootRef}
         scale={
           mirrorMesh
             ? [-1, 1, 1]
